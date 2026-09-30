@@ -1,8 +1,18 @@
-def get_stats(ids):
-    counts = {}
-    for a, b in zip(ids, ids[1:]):
-        counts[(a, b)] = counts.get((a, b), 0) + 1
+import re
+import time
+from collections import Counter
+
+# split text into chunks: words (with their leading space), numbers, punctuation, whitespace
+PATTERN = re.compile(r" ?[^\W\d_]+| ?\d+| ?[^\s\w]+|\s+")
+
+
+def get_stats(words):
+    counts = Counter()
+    for word, freq in words.items():
+        for pair in zip(word, word[1:]):
+            counts[pair] += freq
     return counts
+
 
 def merge(ids, pair, new_id):
     result = []
@@ -16,39 +26,83 @@ def merge(ids, pair, new_id):
             i += 1
     return result
 
-text = "kitoblar daftarlar qalamlar kitob kitoblarimiz daftarlarimiz"
-ids = list(text.encode("utf-8"))
-print("Start length:", len(ids))
 
-vocab = {i: bytes([i]) for i in range(256)}   # token number -> the bytes it stands for
-merges = {}                                     # pair -> new token number
+def train(text, vocab_size):
+    chunks = Counter(PATTERN.findall(text))                          # each unique chunk + how often
+    words = {tuple(c.encode("utf-8")): n for c, n in chunks.items()}
+    print("Unique chunks:", len(words))
 
-num_merges = 10
-for step in range(num_merges):
-    stats = get_stats(ids)
-    pair = max(stats, key=stats.get)            # the most frequent pair
-    new_id = 256 + step
-    ids = merge(ids, pair, new_id)
-    merges[pair] = new_id
-    vocab[new_id] = vocab[pair[0]] + vocab[pair[1]]
-    print(f"merge {step + 1}: {new_id} = {vocab[new_id].decode('utf-8', errors='replace')!r}")
-
-print("End length:", len(ids))
-
-def decode(ids):
-    data = b"".join(vocab[i] for i in ids)
-    return data.decode("utf-8", errors="replace")
-
-def encode(text):
-    ids = list(text.encode("utf-8"))
-    while len(ids) >= 2:
-        stats = get_stats(ids)
-        pair = min(stats, key=lambda p: merges.get(p, float("inf")))
-        if pair not in merges:
+    merges = {}
+    stats = get_stats(words)                                         # count pairs once
+    start = time.time()
+    for new_id in range(256, vocab_size):
+        pair = max(stats, key=lambda p: (stats[p], p))
+        if stats[pair] <= 0:
             break
-        ids = merge(ids, pair, merges[pair])
+
+        changed = []                                                 # only words with the pair change
+        for word, freq in words.items():
+            if pair[0] in word and pair[1] in word:
+                new_word = tuple(merge(word, pair, new_id))
+                if new_word != word:
+                    changed.append((word, new_word, freq))
+
+        for word, new_word, freq in changed:                         # update counts for those words only
+            del words[word]
+            words[new_word] = freq
+            for p in zip(word, word[1:]):
+                stats[p] -= freq
+            for p in zip(new_word, new_word[1:]):
+                stats[p] += freq
+
+        merges[pair] = new_id
+        if new_id % 500 == 0:
+            print(f"{new_id} tokens  ({time.time() - start:.0f}s)")
+    return merges
+
+
+def build_vocab(merges):
+    vocab = {i: bytes([i]) for i in range(256)}
+    for (a, b), new_id in merges.items():                            # dicts keep insertion order
+        vocab[new_id] = vocab[a] + vocab[b]
+    return vocab
+
+
+def save(merges, path):
+    with open(path, "w") as f:
+        for a, b in merges:
+            f.write(f"{a} {b}\n")
+
+
+def load(path):
+    merges = {}
+    with open(path) as f:
+        for new_id, line in enumerate(f, start=256):
+            a, b = line.split()
+            merges[(int(a), int(b))] = new_id
+    return merges
+
+
+def encode(text, merges):
+    ids = []
+    for chunk in PATTERN.findall(text):
+        chunk_ids = list(chunk.encode("utf-8"))
+        while len(chunk_ids) >= 2:
+            pairs = set(zip(chunk_ids, chunk_ids[1:]))
+            pair = min(pairs, key=lambda p: merges.get(p, float("inf")))
+            if pair not in merges:
+                break
+            chunk_ids = merge(chunk_ids, pair, merges[pair])
+        ids.extend(chunk_ids)
     return ids
 
-for w in ["kitoblar", "daftarlarimiz", "oʻzbek 日本"]:
-    ids2 = encode(w)
-    print(w, "->", ids2, "->", [decode([i]) for i in ids2], "| round trip:", decode(ids2) == w)
+
+def decode(ids, vocab):
+    return b"".join(vocab[i] for i in ids).decode("utf-8", errors="replace")
+
+
+if __name__ == "__main__":
+    text = open("data/news_clean.txt", encoding="utf-8").read(10_000_000)
+    merges = train(text, vocab_size=8000)
+    save(merges, "tokenizer/uz_bpe.txt")
+    print("Saved", len(merges), "merges")
