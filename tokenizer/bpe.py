@@ -102,7 +102,7 @@ def decode(ids, vocab):
 
 
 if __name__ == "__main__":
-    text = open("data/news_clean.txt", encoding="utf-8").read(10_000_000)
+    text = open("data/news_clean.txt", encoding="utf-8").read(20_000_000)
     merges = train(text, vocab_size=8000)
     save(merges, "tokenizer/uz_bpe.txt")
     print("Saved", len(merges), "merges")
