@@ -1,4 +1,4 @@
-name = "O'zbegim"
+name = "Soʻzchi"
 words = ["salom", "Umarbek", "kitob"]
 
 print(f"Men {name}man!")
